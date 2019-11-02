@@ -30,12 +30,15 @@ function MatRow:FromName(mat_name, ct)
     o.name = mat_name
     o.link = WritWorthy.FindLink(mat_name)
     if not o.link then return Fail("link not found:"..tostring(mat_name)) end
+    o.name_tr = o.name
+    o.item_id = GetItemLinkItemId(o.link)
+    o.name    = WritWorthy.Mat(o.item_id)
     if ct then
         o.ct = tonumber(ct)
     else
         o.ct = 1
     end
-    o.mm = WritWorthy.Util.MMPrice(o.link)
+    o.mm = WritWorthy.Util.MatPrice(o.link)
     return o
 end
 
@@ -44,12 +47,15 @@ function MatRow:FromLink(mat_link, ct)
     o.name = GetItemLinkName(mat_link)
     o.link = mat_link
     if not o.link then return Fail("name not found:"..tostring(mat_link)) end
+    o.name_tr = o.name
+    o.item_id = GetItemLinkItemId(o.link)
+    o.name    = WritWorthy.Mat(o.item_id)
     if ct then
         o.ct = tonumber(ct)
     else
         o.ct = 1
     end
-    o.mm = WritWorthy.Util.MMPrice(o.link)
+    o.mm = WritWorthy.Util.MatPrice(o.link)
     return o
 end
 
@@ -63,6 +69,7 @@ end
 -- list functions ------------------------------------------------------------
 
 function MatRow.ListDump(mat_list)
+    if not mat_list then return end
     local ToMoney = WritWorthy.Util.ToMoney
     for _, row in ipairs(mat_list) do
         local row_total = row:Total()
@@ -76,6 +83,7 @@ function MatRow.ListDump(mat_list)
 end
 
 function MatRow.ListTotal(mat_list)
+    if not mat_list then return end
     local total = 0
     for _, row in ipairs(mat_list) do
         local row_total = row:Total()

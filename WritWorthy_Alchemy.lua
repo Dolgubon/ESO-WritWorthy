@@ -286,16 +286,18 @@ end
 
 -- Parser ====================================================================
 
-Alchemy.Parser = {}
+Alchemy.Parser = {
+    class = "alchemy"
+}
 local Parser = Alchemy.Parser
 
 function Parser:New()
     local o = {
-        class           = "alchemy"
-    ,   is_poison       = nil   -- if false, "Potion". If true, "Poison"
+        is_poison       = nil   -- if false, "Potion". If true, "Poison"
     ,   effects         = {}    -- { VITALITY, INCREASE_ARMOR, RAVAGE_STAMINA }
     ,   r3list          = {}    -- { list of { Reagent 3-tuple }, { Reagent 3-tuple} ... }
     ,   mat_list        = {}    -- of MatRow
+    ,   crafting_type   = CRAFTING_TYPE_ALCHEMY
     }
     setmetatable(o, self)
     self.__index = self
@@ -303,31 +305,49 @@ function Parser:New()
 end
 
 function Parser:ParseItemLink(item_link)
+    Log:StartNewEvent("ParseItemLink: %s %s", self.class, item_link)
     local fields      = Util.ToWritFields(item_link)
     local solvent_id  = fields.writ1
     self.is_poison    = solvent_id == 239 -- Lorkhan's Tears
-    Log:Add("solvent_id:"..tostring(solvent_id))
-    Log:Add("is_poison:"..tostring(self.is_poison))
+    local log_t = {}
+    log_t.solvent_id = solvent_id
+    log_t.is_poison  = self.is_poison
+    log_t.effects    = {}
     for i, effect_id in ipairs({ fields.writ2
                                , fields.writ3
                                , fields.writ4 }) do
         local effect = Alchemy.Effects[effect_id]
-        if effect then
-            Log:Add("effect_id:"..tostring(effect_id)
-                    .." name:"..tostring(effect.name))
-            table.insert(self.effects, effect)
-        else
-            Log:Add("effect_id:"..tostring(effect_id)
-                    .." pos:"..tostring(i)
-                    .." unknown")
+        if not effect then
             return Fail("Unknown potion effect:"..tostring(effect_id))
         end
+        log_t.effects[i] = tostring(effect_id).." "..tostring(effect.name)
+        table.insert(self.effects, effect)
     end
+    log_t.effects = Log:Flatten("",log_t.effects)
+    Log:Add(log_t)
     self.r3list = Alchemy.ToReagentThreeList( self.effects[1]
                                             , self.effects[2]
                                             , self.effects[3]
                                             )
     return self
+end
+
+
+function Parser:GetRequiredCraftCt()
+                -- Update 21/4.3.0/100026/Wrathbone 2019-01 reduced
+                -- required potion/poison counts.
+                --
+                -- 20x potions or poisons before 4.3.0
+                -- 16x potions or poisons after.
+    local api_version = GetAPIVersion()
+    local result_ct   = 20
+    if 100026 <= api_version then
+        result_ct = 16
+    end
+
+    local result_per_craft = 4
+    if self.is_poison then result_per_craft = 16 end
+    return math.ceil(result_ct / result_per_craft)
 end
 
 function Parser:ToMatList()
@@ -337,10 +357,7 @@ function Parser:ToMatList()
     local MatRow = WritWorthy.MatRow
     local min_gold = 9999999999
     local min_r3   = nil
-    local mat_ct   = 5  -- Writs usually require 20x, I make 4x potion, 16x poison per mat
-    if self.is_poison then
-        mat_ct = 2
-    end
+    local mat_ct   = self:GetRequiredCraftCt()
     for _, r3 in pairs(self.r3list) do
         r3[1].mat = MatRow:FromName(r3[1].name, mat_ct)
         r3[2].mat = MatRow:FromName(r3[2].name, mat_ct)
@@ -365,6 +382,7 @@ function Parser:ToMatList()
         end
     end
                         -- Return materials for one batch of potion or poison.
+    self.mat_list = {}
     if self.is_poison then
         table.insert(self.mat_list, MatRow:FromName("Alkahest", mat_ct))
     else
@@ -375,4 +393,31 @@ function Parser:ToMatList()
     table.insert(self.mat_list, min_r3[3].mat)
 
     return self.mat_list
+end
+
+function Parser:ToKnowList()
+    Log:StartNewEvent("ToKnowList: %s", self.class)
+    local three_reagents = WritWorthy.RequiredSkill.AL_LABORATORY_USE:ToKnow()
+    local four_pots_per  = WritWorthy.RequiredSkill.AL_POTION_4X:ToKnow()
+    four_pots_per.is_warn = true
+    local r = { three_reagents, four_pots_per }
+    return r
+end
+
+-- From Dolgubon's LLC functions.lua
+local function GetItemIDFromLink(itemLink) return tonumber(string.match(itemLink,"|H%d:item:(%d+)")) end
+
+function Parser:ToDolRequest(unique_id)
+    local mat_list = self:ToMatList()
+    local o = {}
+    o[1] = GetItemIDFromLink(mat_list[1].link) -- solvent
+    o[2] = GetItemIDFromLink(mat_list[2].link) -- reagent1
+    o[3] = GetItemIDFromLink(mat_list[3].link) -- reagent2
+    o[4] = GetItemIDFromLink(mat_list[4].link) -- reagent3 (optional, nilable)
+    o[5] = mat_list[1].ct                      -- timesToMake
+    o[6] = true                                -- autocraft
+    o[7] = unique_id                           -- reference
+    return { ["function"       ] = "CraftAlchemyItemId"
+           , ["args"           ] = o
+           }
 end

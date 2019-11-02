@@ -9,6 +9,7 @@ WritWorthy.GOLD_UNKNOWN = nil
 function Util.Fail(msg)
     d(msg)
     WritWorthy.Log:Add(msg)
+    WritWorthy.Log:EndEvent()
 end
 
 -- Break an item_link string into its numeric pieces
@@ -66,6 +67,10 @@ end
 
 -- Chat Colors ---------------------------------------------------------------
 
+WritWorthy.Util.COLOR_RED    = "FF3333"
+WritWorthy.Util.COLOR_GREEN  = "33AA33"
+WritWorthy.Util.COLOR_GREY   = "999999"
+WritWorthy.Util.COLOR_ORANGE = "FF8800"
 
 function Util.color(color, text)
     return "|c" .. color .. text .. "|r"
@@ -94,44 +99,44 @@ function Util.ToMoney(x)
     return ZO_CurrencyControl_FormatCurrency(Util.round(x), false)
 end
 
--- Master Merchant integration
-function Util.MMPrice(link)
-    if not MasterMerchant then return WritWorthy.GOLD_UNKNOWN end
-    if not link then return WritWorthy.GOLD_UNKNOWN end
-    local mm = MasterMerchant:itemStats(link, false)
-    if not mm then return WritWorthy.GOLD_UNKNOWN end
-    if mm.avgPrice and 0 < mm.avgPrice then
-        return mm.avgPrice
+function Util.MatPrice(link)
+                        -- LibPrice required for price lookups
+    if LibPrice then
+                        -- Explicitly list the guild store sources, omit all
+                        -- others. We don't want "NPC Vencor" price of
+                        -- 13g-per-Zircon-Plating creeping into our price
+                        -- calculations.
+        local gold,s,f = LibPrice.ItemLinkToPriceGold(link, "mm", "att", "ttc")
+        -- if gold then
+        --     d(string.format( "|c999999%s.%s |cFFFFFF%d|c999999 for %s"
+        --                    , s, f, gold,link ))
+        -- end
+        if gold then return gold end
     end
 
-                        -- Normal price lookup came up empty, try an
-                        -- expanded time range.
-                        --
-                        -- MasterMerchant lacks an API to control time range,
-                        -- it does this internally by polling the state of
-                        -- control/shift-key modifiers (!).
-                        --
-                        -- So instead of using a non-existent API, we
-                        -- monkey-patch MM with our own code that ignores
-                        -- modifier keys and always returns a LOOONG time
-                        -- range.
-                        --
-    local save_tc = MasterMerchant.TimeCheck
-    MasterMerchant.TimeCheck
-        = function(self)
-            local daysRange = 100  -- 3+ months is long enough.
-            return GetTimeStamp() - (86400 * daysRange), daysRange
-          end
-    mm = MasterMerchant:itemStats(link, false)
-    MasterMerchant.TimeCheck = save_tc
-
-                        -- No M.M. price? If permitted, look for a
-                        -- hardcoded price.
-    if (not mm) and WritWorthy.savedVariables.enable_mm_fallback then
-        local mm_fb = WritWorthy.FallbackPrice(link)
-        if mm_fb then return mm_fb end
+                        -- If fallback enabled, use that
+    if WritWorthy.savedVariables.enable_mm_fallback then
+        local fb = WritWorthy.FallbackPrice(link)
+        if fb then
+            return fb
+        end
     end
+                        -- No price for you!
+    return WritWorthy.GOLD_UNKNOWN
+end
 
-    if not mm then return WritWorthy.GOLD_UNKNOWN end
-    return mm.avgPrice
+                        -- Prevent access to LibSets until
+                        -- it is done scanning sets.
+                        --
+                        -- SURPRISE this isn't a "util" function, but I need
+                        -- it defined early in the load order, so might as
+                        -- well put it here in util.lua.
+function WritWorthy.LibSets()
+    if not WritWorthy.lib_sets then
+        if LibSets and (not LibSets.IsSetsScanning())
+            and LibSets.AreSetsLoaded() then
+                WritWorthy.lib_sets = LibSets
+        end
+    end
+    return WritWorthy.lib_sets
 end

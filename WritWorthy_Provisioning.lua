@@ -575,7 +575,7 @@ Provisioning.FOODDRINK_TO_RECIPE_ITEM_ID = {
 ,   [112439] = 96961
 }
 
-    -- Recipe --------------------------------------------------------------------
+-- Recipe --------------------------------------------------------------------
 
 Provisioning.Recipe  = {}
 local Recipe = Provisioning.Recipe
@@ -587,6 +587,8 @@ function Recipe:New(args)
     ,   recipe_link       = args.recipe_link        -- "|H1:item:45888:1:36:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0|h|h"
     ,   is_known          = args.is_known           -- true
     ,   mat_list          = {}                      -- list of MatRow ingredients
+    ,   fooddrink_link    = nil
+    ,   fooddrink_name    = nil
     }
 
     setmetatable(o, self)
@@ -598,17 +600,33 @@ function Recipe:FromFoodDrinkItemID(fooddrink_item_id)
     local MatRow = WritWorthy.MatRow
 
     local o = Recipe:New({ fooddrink_item_id= fooddrink_item_id })
-    Log:Add("fooddrink_item_id:"..tostring(fooddrink_item_id))
     o.recipe_item_id = Provisioning.FOODDRINK_TO_RECIPE_ITEM_ID[fooddrink_item_id]
-    Log:Add("recipe_item_id:"..tostring(o.recipe_item_id))
     if not o.recipe_item_id then return nil end
     o.recipe_link = string.format(
               "|H1:item:%d:1:36:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0|h|h"
             , o.recipe_item_id
             )
+    o.fooddrink_link = GetItemLinkRecipeResultItemLink(
+                                      o.recipe_link
+                                    , LINK_STYLE_DEFAULT)
+    o.fooddrink_name    = WritWorthy.FoodDrink(GetItemLinkItemId(o.fooddrink_link))
     o.is_known = IsItemLinkRecipeKnown(o.recipe_link)
-    Log:Add("recipe_link:"..tostring(o.recipe_link))
-    Log:Add("is_known:"..tostring(o.is_known))
+
+    local r = { GetItemLinkItemType(o.fooddrink_link) }
+    o.fooddrink_item_type = r[1]
+    o.fooddrink_specialized_item_type = r[2]
+
+    local log_t = {}
+    log_t.fooddrink_item_id                 = fooddrink_item_id
+    log_t.recipe_item_id                    = o.recipe_item_id
+    log_t.recipe_link                       = o.recipe_link
+    log_t.fooddrink_link                    = o.fooddrink_link
+    log_t.fooddrink_name                    = o.fooddrink_name
+    log_t.is_known                          = o.is_known
+    log_t.fooddrink_item_type               = o.fooddrink_item_type
+    log_t.fooddrink_specialized_item_type   = o.fooddrink_specialized_item_type
+    Log:Add(log_t)
+
     local mat_ct = GetItemLinkRecipeNumIngredients(o.recipe_link)
     local cook_ct = 2 -- Usually need to craft 2x batches for master writs
     for ingr_index = 1,mat_ct do
@@ -647,13 +665,15 @@ function Provisioning.FindRecipe(fooddrink_item_id)
     return recipe
 end
 
-Provisioning.Parser = {}
+Provisioning.Parser = {
+    class = "provisioning"
+}
 local Parser = Provisioning.Parser
 
 function Parser:New()
     local o = {
-        class           = "smithing"
-    ,   recipe          = nil -- Recipe{}
+        recipe          = nil -- Recipe{}
+    ,   crafting_type   = CRAFTING_TYPE_PROVISIONING
     }
     setmetatable(o, self)
     self.__index = self
@@ -661,6 +681,7 @@ function Parser:New()
 end
 
 function Parser:ParseItemLink(item_link)
+    Log:StartNewEvent("ParseItemLink: %s %s", self.class, item_link)
     local fields = Util.ToWritFields(item_link)
     self.recipe = Provisioning.FindRecipe(fields.writ1)
     if not self.recipe then return nil end
@@ -672,10 +693,33 @@ function Parser:ToMatList()
 end
 
 function Parser:ToKnowList()
+    Log:StartNewEvent("ToKnowList: %s", self.class)
     local Know = WritWorthy.Know
     local k = Know:New({ name = "recipe"
                        , is_known = self.recipe.is_known
-                       , lack_msg = "Recipe not known"
+                       , lack_msg = WritWorthy.Str("know_err_recipe")
                        })
-    return { k }
+    local r = { k }
+    if self.recipe.fooddrink_item_type == ITEMTYPE_FOOD then
+        local chef   = WritWorthy.RequiredSkill.PR_FOOD_4X:ToKnow()
+        chef.is_warn = true
+        table.insert(r, chef)
+    elseif self.recipe.fooddrink_item_type == ITEMTYPE_DRINK then
+        local brewer = WritWorthy.RequiredSkill.PR_DRINK_4X:ToKnow()
+        brewer.is_warn = true
+        table.insert(r, brewer)
+    end
+    return r
+end
+
+function Parser:ToDolRequest(unique_id)
+    local mat_list = self:ToMatList()
+    local o = {}
+    o[1] = self.recipe.recipe_item_id -- recipeId
+    o[2] = 2                          -- timesToMake
+    o[3] = true                       -- autocraft
+    o[4] = unique_id                  -- reference
+    return { ["function"       ] = "CraftProvisioningItemByRecipeId"
+           , ["args"           ] = o
+           }
 end

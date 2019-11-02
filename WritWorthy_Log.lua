@@ -4,87 +4,142 @@
 
 local WritWorthy = _G['WritWorthy'] -- defined in WritWorthy_Define.lua
 
-WritWorthy.Log = {
-    q = {
-        left_index = 0
-    ,   right_index = -1
-    ,   current = nil
-    }
-,   MAX_EVENT_CT = 20
-}
+WritWorthy.Log = {}
 
 local Log = WritWorthy.Log
 
--- Generic Queue -------------------------------------------------------------
-
-function Log:PushRight(e)
-    self.q.right_index = self.q.right_index + 1
-    self.q[self.q.right_index] = e
-    return e
-end
-
-function Log:PopLeft()
-    if self.q.right_index < self.q.left_index then return nil end
-    local e = self.q[self.q.left_index]
-    self.q.left_index = self.q.left_index + 1
-    self.q[self.q.left_index] = nil
-    return e
-end
-
-function Log:EventCt()
-    return 1 + self.q.right_index - self.q.left_index
-end
-
 -- Event ---------------------------------------------------------------------
+--
+-- Group multiple log lines under a single umbreslla "event".
+-- This reduces the number of LibDebugLogger records, by a LOT.
+-- It also makes it much easier to read the log, see were each
+-- writ's parse happened, and so on.
 
-function Log:StartNewEvent()
-    self:TruncateEventList()
-    self.current = self:PushRight({})
-    return self.current
+function Log:StartNewEvent(event_name, ...)
+    if self.log_event then
+        self:EndEvent()
+    end
+    local s = string.format(event_name or "--", ...)
+    self.log_event = { s }
 end
 
--- If we're at max capacity, throw out the oldest event.
-function Log:TruncateEventList()
-    if self:EventCt() < self.MAX_EVENT_CT then return end
-    self:PopLeft()
+function Log:EndEvent()
+    local s = table.concat(self.log_event, "\n.  ")
+    self.log_event = nil
+    Log.Debug(s)
 end
 
--- Append one value to the current event
-function Log:Add(value)
-    if not self.current then
+-- Append one value to the current event.
+--
+-- Single-arg overload just writes that value to the log.
+-- Double-arg overload includes a name, so that you can write things
+-- like "motif:" <motif data>
+--
+-- Values, if scalar, are written as is. If tables, the table is
+-- expanded and written, usually as a single long line of key:value pairs.
+--
+function Log:Add(arg1, arg2)
+    local name  = arg1
+    local value = arg2
+    if not value then
+        name = ""
+        value = arg1
+    end
+
+    if not self.log_event then
         self:StartNewEvent()
     end
-    table.insert(self.current,  value)
+    table.insert(self.log_event, Log:Flatten(name, value))
 end
 
--- File I/O (well, just I) ---------------------------------------------------
+function Log:Flatten(name, value)
+    local prefix = ""
+    if name and name ~= "" then
+        prefix = name..": "
+    end
 
--- If prev_q looks like a valid saved copy of Log.q, then use prev_q as
--- our new Log.q.  If not, NOP, leaving our default Log.q in place.
-function Log:LoadPreviousQueue(prev_q)
-                        -- Validate: don't let corruption in SavedVariables
-                        -- afflict us after a /reloadui.
-    if not prev_q then return end
-    if not prev_q.left_index then return end
-    if not prev_q.right_index then return end
-                        -- Too many events in log, just start empty rather
-                        -- than try to purge the oldest.
-    if Log.MAX_EVENT_CT <= (prev_q.right_index - prev_q.left_index) then
-        return
+    if type(value) ~= "table" then
+        return prefix..tostring(value)
     end
-                        -- Make sure everything between the head and tail
-                        -- pointers are filled. And while scanning, retain
-                        -- ONLY those elements in this range, skipping any
-                        -- that try to sneak in from outside the range, and
-                        -- sliding everyone down to 0 again while we're at it.
-    local new_q = {}
-    for i = prev_q.left_index+1,prev_q.right_index do
-        if not prev_q[i] then return end
-        table.insert(new_q, prev_q[i])
+
+    local max_line_len = 0
+    local lines        = {}
+    local sorted_keys  = {}
+    for k,v in pairs(value) do
+        table.insert(sorted_keys, k)
     end
-    new_q.right_index = #new_q - 1
-    new_q.left_index = 0
-    new_q.current = nil
-    self.q = new_q
+    table.sort(sorted_keys)
+    for _,k in ipairs(sorted_keys) do
+        local v    = value[k]
+        local line = string.format("%s:%s",tostring(k), tostring(v))
+        max_line_len = math.max(max_line_len, #line)
+        table.insert(lines, line)
+    end
+                        -- Short enough to squeeze onto a single line?
+                        -- Please do. The log is already way too long.
+    if #lines < 10 and max_line_len < 80 then
+        return prefix..table.concat(lines, "  ")
+    end
+                        -- Too long for one line. Return as lines.
+    return prefix..table.concat(lines,"\n")
 end
 
+-- LibDebugLogger ------------------------------------------------------------
+
+-- If Sirinsidiator's LibDebugLogger is installed, then return a logger from
+-- that. If not, return a NOP replacement.
+
+local NOP = {}
+function NOP:Debug(...) end
+function NOP:Info(...) end
+function NOP:Warn(...) end
+function NOP:Error(...) end
+
+WritWorthy.log_to_chat            = false
+WritWorthy.log_to_chat_warn_error = false
+
+function WritWorthy.Logger()
+    local self = WritWorthy
+    if not self.logger then
+        if LibDebugLogger then
+            self.logger = LibDebugLogger.Create(self.name)
+        end
+        if not self.logger then
+            self.logger = NOP
+            WritWorthy.log_to_chat_warn_error  = true
+        end
+    end
+    return self.logger
+end
+
+function WritWorthy.LogOne(color, ...)
+    if WritWorthy.log_to_chat then
+        d("|c"..color..WritWorthy.name..": "..string.format(...).."|r")
+    end
+end
+
+function WritWorthy.LogOneWarnError(color, ...)
+    if WritWorthy.log_to_chat or WritWorthy.log_to_chat_warn_error then
+        d("|c"..color..WritWorthy.name..": "..string.format(...).."|r")
+    end
+end
+
+function Log.Debug(...)
+    WritWorthy.LogOne("666666",...)
+    WritWorthy.Logger():Debug(...)
+end
+
+function Log.Info(...)
+    WritWorthy.LogOne("999999",...)
+    WritWorthy.Logger():Info(...)
+end
+
+function Log.Warn(...)
+    WritWorthy.LogOneWarnError("FF8800",...)
+    WritWorthy.Logger():Warn(...)
+end
+
+function Log.Error(...)
+    WritWorthy.LogOneWarnError("FF6666",...)
+    WritWorthy.Logger():Error(...)
+end
